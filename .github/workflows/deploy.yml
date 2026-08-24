@@ -3,13 +3,27 @@ name: deploy
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+
+# Required for GitHub to mint an OIDC token. Without id-token: write the
+# role assumption below fails. contents: read is the least checkout needs.
+permissions:
+  id-token: write
+  contents: read
 
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: devops-assignment
 
+# One deploy at a time. Two concurrent applies against the same state is
+# the fastest way to corrupt it.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,30 +31,48 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Terraform apply
-        working-directory: terraform
-        run: terraform apply -auto-approve
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.1
 
       - name: Terraform init
         working-directory: terraform
-        run: terraform init
+        run: terraform init -input=false
 
-      - name: Login to ECR
+      - name: Terraform fmt and validate
+        working-directory: terraform
         run: |
-          docker login --username AWS ${{ env.ECR_REGISTRY }}
+          terraform fmt -check -recursive
+          terraform validate
 
-      - name: Build and push image
-        run: |
-          docker build -t $ECR_REPOSITORY:latest ./app
-          docker push $ECR_REPOSITORY:latest
+      # The ECR repository has to exist before an image can be pushed to it,
+      # and the image has to exist before the ECS service can reference it.
+      # Creating the repository on its own breaks that cycle.
+      - name: Create the ECR repository if it does not exist
+        working-directory: terraform
+        run: terraform apply -auto-approve -input=false -target=aws_ecr_repository.app
 
-      - name: Force new deployment
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          aws ecs update-service \
-            --cluster devops-assignment-cluster \
-            --service devops-assignment-service \
-            --force-new-deployment
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          docker build --platform linux/amd64 -t "$IMAGE" ./app
+          docker push "$IMAGE"
+
+      - name: Terraform plan
+        working-directory: terraform
+        run: terraform plan -input=false -no-color -var="image_tag=$GITHUB_SHA" -out=tfplan
+
+      # Pull requests stop here. Nothing is applied from a branch.
+      - name: Terraform apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        working-directory: terraform
+        run: terraform apply -input=false -no-color tfplan
