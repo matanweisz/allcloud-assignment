@@ -15,6 +15,7 @@ was found, and what was changed.
 | Infrastructure | [`terraform/`](terraform/) |
 | Pipeline | [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) |
 | Baseline, before any fix | `git show bdd007f` |
+| **Screen recording** | **[Diagnosing the deployment failure](https://drive.google.com/file/d/1W4JC_OY406G1K4QHH3W6Zs0sNPR5A27q/view?usp=sharing)** |
 
 Every bug below links to an evidence file containing the commands run, the verbatim output,
 and the reasoning. The commit history follows the same order, one branch per fix.
@@ -429,6 +430,37 @@ Then confirm the policy actually fires: alarm into ALARM, a recorded scaling act
 `desiredCount` increasing. Configuration existing is not the same as configuration working.
 
 Full detail in [`evidence/11`](evidence/11-autoscaling-metric-choice.md).
+
+---
+
+## Screen recording
+
+**[Diagnosing the deployment failure](https://drive.google.com/file/d/1W4JC_OY406G1K4QHH3W6Zs0sNPR5A27q/view?usp=sharing)** (Google Drive, viewable without signing in)
+
+Unedited, single take, working through the deployment that applies cleanly and never settles.
+
+On sequence, because the commit history shows it and the write-up should match: the port
+mismatch and the health check path were both found before the first AWS deployment, the port
+by reading the code and the path by running the container locally. That is why neither
+appeared as a deployment failure. To record the deployment-time behaviour the brief asks
+about, the health check path was deliberately put back on a throwaway branch
+(`repro/deployment-rollback`, not merged) and the failure reproduced against the real
+service. Everything shown in the recording is live: real infrastructure, real task failures,
+real service events.
+
+What it covers:
+
+- a clean `terraform apply` that proves nothing, and why `wait_for_steady_state = false` is
+  the reason
+- `curl` returning 503 from outside the VPC
+- an incorrect first hypothesis (the container is crashing), corrected by observing that
+  tasks were starting rather than failing to start
+- the service event naming the exact status code, `Health checks failed with these codes:
+  [404]`, and what a 404 rules out that a timeout would not
+- confirming the same fact from the application's own access log
+- a second incorrect hypothesis (the grace period), corrected by working the arithmetic out
+  loud: 3 x 15 = 45 seconds to be declared unhealthy against a 25 second startup, so the
+  grace period could not have been the cause
 
 ---
 
