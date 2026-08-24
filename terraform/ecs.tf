@@ -52,8 +52,17 @@ resource "aws_ecs_service" "app" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
-  # NOTE: tuned down from the default so deploys "feel" faster in testing.
-  health_check_grace_period_seconds = 5
+  # Derived, not guessed. The app sleeps 25s before binding a socket, and the
+  # target group needs unhealthy_threshold * interval = 3 * 15 = 45s of failures
+  # before it reports a target unhealthy. 25 + 45 = 70s is the floor below which
+  # a healthy-but-slow task can be killed. 90 leaves headroom for image pull and
+  # ENI attach, neither of which is in the 25s figure. See evidence/08.
+  health_check_grace_period_seconds = 90
+
+  # Without this, terraform apply returns 0 as soon as the service record is
+  # written, whether or not a task ever starts. That is how a completely broken
+  # deployment reported success. This makes the apply fail instead.
+  wait_for_steady_state = true
 
   deployment_circuit_breaker {
     enable   = true
