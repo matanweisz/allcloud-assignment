@@ -28,10 +28,12 @@ variable "app_version" {
   default = "1.0.0"
 }
 
-# Set from a measurement rather than picked. See evidence/11 for the load test
-# this came from.
+# Measured, not picked. 917 req/min/task gave a 606ms p95 while CPU sat at
+# 1.92%; 80 req/min gave 5ms. 300 is a third of the degradation point, chosen
+# conservatively because the curve is steep rather than gradual. Full load
+# test in evidence/11.
 variable "requests_per_target_target" {
   description = "Target ALB requests per task per minute for autoscaling"
   type        = number
-  default     = 600
+  default     = 300
 }

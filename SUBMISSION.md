@@ -268,8 +268,151 @@ a bad image. It offers nothing against a misconfigured load balancer.
 
 ## Proof it ran
 
-See [`evidence/07-working-end-to-end.txt`](evidence/07-working-end-to-end.txt) for the full
-capture.
+Full capture in [`evidence/07`](evidence/07-working-end-to-end.txt). The essentials:
+
+```console
+$ curl -i http://devops-assignment-alb-1419604975.us-east-1.elb.amazonaws.com/
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"hostname":"ip-172-31-75-214.ec2.internal","message":"hello from devops-assignment","version":"1.0.0"}
+```
+
+Called from a laptop on `5.29.11.119`, which is not an AWS address. The brief notes that a
+healthy target group is not by itself proof of external reachability, so both are recorded:
+
+| | |
+|---|---|
+| Target | `172.31.75.214:8080`, `us-east-1f`, **healthy** |
+| Service | desired 1, running 1, pending 0, rollout **COMPLETED** |
+| Grace period | 90 |
+| ECS service event | `has reached a steady state.` |
+
+The last line is the one that matters against the brief's "applies cleanly once and then
+never reaches a stable state doesn't count." With `wait_for_steady_state = true`, the apply
+itself blocked for 2m53s waiting for that event rather than returning in two seconds.
+
+---
+
+## Part 2, item 1: Secrets Manager
+
+Full capture in [`evidence/10`](evidence/10-secrets-manager.txt).
+
+The password moved out of `variables.tf` entirely and into Secrets Manager, injected through
+the task definition's `secrets` block rather than `environment`:
+
+```json
+"environment": [ { "name": "APP_VERSION", "value": "1.0.0" } ],
+"secrets": [ {
+    "name": "DB_PASSWORD",
+    "valueFrom": "arn:aws:secretsmanager:us-east-1:193131271989:secret:devops-assignment/db-password-6DLcHb"
+} ]
+```
+
+Verification that the value is genuinely absent, rather than just moved:
+
+```console
+$ aws ecs describe-task-definition --task-definition devops-assignment --output json | grep -c "$SECRET"
+0
+```
+
+The `-6DLcHb` suffix is six random characters Secrets Manager appends at creation. It differs
+per secret and is case sensitive, which is why the ARN is taken from the resource attribute
+rather than constructed by hand.
+
+The execution role can read exactly one secret:
+
+```json
+{
+  "Sid": "ReadDbPassword",
+  "Action": ["secretsmanager:GetSecretValue"],
+  "Resource": "arn:aws:secretsmanager:us-east-1:193131271989:secret:devops-assignment/db-password-6DLcHb"
+}
+```
+
+**Proof it works:** a task is RUNNING on revision 8 of the task definition. That is the proof,
+not a separate check. ECS resolves secrets during task setup and fails the task with
+`ResourceInitializationError` if the execution role cannot fetch them. A task that reaches
+RUNNING has necessarily had the secret injected.
+
+Two details worth stating. The **execution role** resolves secrets, not the task role, because
+resolution happens before the container starts. And no `kms:Decrypt` statement is needed
+because the secret uses the default `aws/secretsmanager` key; a customer managed key would
+require it.
+
+---
+
+## Part 2, item 2: autoscaling
+
+Configuration in [`evidence/11a`](evidence/11a-autoscaling-config.txt), the measurement behind the
+metric choice in [`evidence/11`](evidence/11-autoscaling-metric-choice.md).
+
+```
+scalable target:  min 1, max 4, ecs:service:DesiredCount
+policy:           TargetTrackingScaling, ALBRequestCountPerTarget, target 300
+cooldowns:        60s out, 300s in
+```
+
+Application Auto Scaling created the alarm pair automatically, the low alarm at 270, which is
+target tracking's built-in 10% hysteresis.
+
+### Why requests per target and not CPU, with the number
+
+The brief asks for a real number from this deployment. Load was generated against the ALB
+while the service ran a single task, and all figures below are server-side from CloudWatch
+rather than from the load generator.
+
+| req/min per target | avg response | p95 response | **CPU max** | Memory |
+|---|---|---|---|---|
+| 78 | 1.6 ms | 3.0 ms | **0.24%** | 4.10% |
+| 80 | 2.0 ms | 5.3 ms | **0.31%** | 4.10% |
+| **917** | **318 ms** | **606 ms** | **1.92%** | **4.10%** |
+
+Between 80 and 917 requests per minute, **p95 response time rose about 114x** while **CPU went
+from 0.31% to 1.92%** and memory did not move at all.
+
+The arithmetic that settles it. Extrapolating from 917 req/min at 1.92% CPU, a 50% CPU target
+would require roughly:
+
+```
+917 x (50 / 1.92) = ~23,900 requests per minute per task
+```
+
+Around 25 times the load that already pushed p95 past 600 ms. **A CPU policy would never fire
+before the service was unusable**, while showing a green alarm the whole time. That is worse
+than no policy, because it looks like it works.
+
+The cause connects to the code review answer below: the app runs on the Werkzeug development
+server and serializes a trivial JSON document. Nothing is compute-bound. What runs out is
+concurrency, so requests queue and the CPU stays idle waiting rather than working.
+
+### The target value, and what I don't know
+
+300 req/min per target. 917 produced an unacceptable 606 ms p95; 78 to 80 produced 3 to 5 ms.
+300 is a third of the measured degradation point, chosen conservatively because the curve is
+steep rather than gradual, and because an unnecessary task costs about a cent an hour.
+
+**The knee was not located precisely.** Generating clean intermediate load from a laptop in
+Israel against us-east-1 was not possible: the first attempt returned 5 second response times
+at a concurrency of one, which is not credible against a 0.31 s idle request. The cause was
+local socket exhaustion on the client after the high concurrency run. Every figure above is
+therefore taken from `TargetResponseTime`, which measures the target rather than the round
+trip. Worth remembering generally: when a load test returns implausible numbers, suspect the
+generator before the target.
+
+An earlier commit set this to 600. That was a guess made before measuring, and the
+measurement showed it sits too close to the degradation point. Corrected rather than left as
+whatever happened to be committed first.
+
+### How I would validate it properly
+
+Load generated from inside the VPC to remove round trip time and client limits. A step ramp
+holding each level for five minutes so CloudWatch's 60 second periods get several clean
+samples. The knee read against an explicit p95 SLO, with the target set at about 70% of it.
+Then confirm the policy actually fires: alarm into ALARM, a recorded scaling activity, and
+`desiredCount` increasing. Configuration existing is not the same as configuration working.
+
+Full detail in [`evidence/11`](evidence/11-autoscaling-metric-choice.md).
 
 ---
 

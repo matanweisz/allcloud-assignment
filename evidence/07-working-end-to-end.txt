@@ -1,34 +1,35 @@
-PROOF: end to end, captured 2026-08-24 15:39:57Z
+PROOF: end to end, final stack, captured 2026-08-24 21:24:23Z
 
---- 1. curl the ALB public DNS from a laptop outside the VPC ---
-$ curl -i http://devops-assignment-alb-2011566585.us-east-1.elb.amazonaws.com/
+--- 1. curl the ALB from a laptop outside AWS ---
+$ curl -i http://devops-assignment-alb-1419604975.us-east-1.elb.amazonaws.com/
 HTTP/1.1 200 OK
-Date: Mon, 24 Aug 2026 15:39:57 GMT
+Date: Mon, 24 Aug 2026 21:24:23 GMT
 Content-Type: application/json
-Content-Length: 102
+Content-Length: 104
 Connection: keep-alive
 Server: Werkzeug/3.1.8 Python/3.12.14
 
-{"hostname":"ip-172-31-22-2.ec2.internal","message":"hello from devops-assignment","version":"1.0.0"}
-$ curl -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s' http://devops-assignment-alb-2011566585.us-east-1.elb.amazonaws.com/
-HTTP 200 in 0.336513s
+{"hostname":"ip-172-31-75-214.ec2.internal","message":"hello from devops-assignment","version":"1.0.0"}
 
---- 2. the caller is genuinely outside AWS ---
-public IP of this machine: 5.29.11.119
+  HTTP 200 in 0.309562s
+  caller public IP: 5.29.11.119  (not an AWS address)
 
---- 3. target group health ---
---------------------------------------------------
-|              DescribeTargetHealth              |
-+-------------+-------+----------+---------------+
-|     AZ      | Port  |  State   |    Target     |
-+-------------+-------+----------+---------------+
-|  us-east-1c |  8080 |  healthy |  172.31.22.2  |
-+-------------+-------+----------+---------------+
---- 4. service state ---
-------------------------------------------------
-|               DescribeServices               |
-+---------+----------+-------------+-----------+
-| desired | pending  |   rollout   |  running  |
-+---------+----------+-------------+-----------+
-|  1      |  0       |  COMPLETED  |  1        |
-+---------+----------+-------------+-----------+
+--- 2. healthy target ---
+----------------------------------------------------
+|               DescribeTargetHealth               |
++-------------+-------+----------+-----------------+
+|     AZ      | Port  |  State   |     Target      |
++-------------+-------+----------+-----------------+
+|  us-east-1f |  8080 |  healthy |  172.31.75.214  |
++-------------+-------+----------+-----------------+
+--- 3. service stable ---
+---------------------------------------------------------
+|                   DescribeServices                    |
++---------+--------+----------+-------------+-----------+
+| desired | grace  | pending  |   rollout   |  running  |
++---------+--------+----------+-------------+-----------+
+|  1      |  90    |  0       |  COMPLETED  |  1        |
++---------+--------+----------+-------------+-----------+
+--- 4. steady state confirmed by ECS itself ---
+2026-08-25T00:04:44.264000+03:00	(service devops-assignment-service) has reached a steady state.
+2026-08-25T00:04:44.263000+03:00	(service devops-assignment-service) (deployment ecs-svc/4260386681872331285) deployment completed.
