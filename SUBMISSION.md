@@ -6,19 +6,30 @@ A Flask app on ECS Fargate behind an Application Load Balancer, provisioned by T
 It arrived broken in several places. This document covers what was wrong, how each fault
 was found, and what was changed.
 
+The end state, in one line: `curl` from a non-AWS address returned 200, the target group
+held one healthy target, and the service reported `has reached a steady state.` The stack
+was then destroyed per the brief's cost note, so the DNS name below no longer resolves.
+
 ## How to navigate this
 
 | | |
 |---|---|
-| Live app | see [Proof it ran](#proof-it-ran) |
-| Raw evidence | [`evidence/`](evidence/), one file per finding, numbered in the order found |
+| The brief | [`allcloud-devops-home-assignmnet.pdf`](allcloud-devops-home-assignmnet.pdf) |
+| Proof it ran | [curl 200 + healthy target](#proof-it-ran) |
+| What was broken | [twelve faults, six layers](#what-was-broken) |
+| Secrets Manager | [Part 2, item 1](#part-2-item-1-secrets-manager) |
+| Autoscaling | [Part 2, item 2](#part-2-item-2-autoscaling) |
+| Q3 and Q4 | [Fargate vs EC2 vs EKS](#question-3-fargate-ecs-on-ec2-or-eks), [code review flag](#question-4-one-thing-to-flag-in-code-review) |
+| Raw evidence | [`evidence/`](evidence/), one file per finding |
 | Infrastructure | [`terraform/`](terraform/) |
 | Pipeline | [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) |
 | Baseline, before any fix | `git show bdd007f` |
-| **Screen recording** | **[Diagnosing the deployment failure](https://drive.google.com/file/d/1W4JC_OY406G1K4QHH3W6Zs0sNPR5A27q/view?usp=sharing)** |
+| **Screen recording** | **[Diagnosing the deployment failure](https://drive.google.com/file/d/1W4JC_OY406G1K4QHH3W6Zs0sNPR5A27q/view?usp=sharing)**, sequence explained [below](#screen-recording) |
 
 Every bug below links to an evidence file containing the commands run, the verbatim output,
-and the reasoning. The commit history follows the same order, one branch per fix.
+and the reasoning. Evidence files are numbered in the order things were found, not by the
+fault numbers below, which is why bug 6 points at evidence 02 and 08. The commit history
+follows the same order, one branch per fix.
 
 ## Approach
 
@@ -33,9 +44,10 @@ one at a time so that each change could be attributed. This cost extra deploymen
 and was worth it. Bugs 4 and 5 below are the clearest example: they affect the same API
 call, and fixing them together would have repaired the second without ever observing it.
 
-Three of the seven faults were found by reproducing the container locally before spending
-anything on AWS. That was deliberate. Building and running the image takes thirty seconds
-and answers questions that a deployment answers in five minutes.
+Bugs 1 to 3 were found before spending anything on AWS: the port mismatch was noticed
+reading the code, then both it and the health check path were confirmed by building and
+running the container locally. That was deliberate. Building and running the image takes
+thirty seconds and answers questions that a deployment answers in five minutes.
 
 ---
 
@@ -125,7 +137,8 @@ stoppedReason: ResourceInitializationError ... operation error ECR: GetAuthoriza
 startedAt:     null
 ```
 
-The task sat PENDING for four minutes forty five seconds before dying.
+The task sat PENDING for four and a half minutes before dying, 4m 31s of it between pull
+start and stopping.
 
 **How it was traced.** Three details did the work. `StatusCode: 0` means no HTTP response
 ever arrived, so the failure is below the application layer. The four minute duration means
@@ -146,14 +159,24 @@ are no private subnets in the default VPC to place tasks in. VPC interface endpo
 public internet and are the right answer in a production account, at the cost of four more
 resources for no benefit in this exercise.
 
+One accepted risk stays in the config: the service places tasks across all six default
+subnets, including `us-east-1e`, a zone with historically limited Fargate support. It never
+misplaced a task during this work, so it was left alone rather than fixed preemptively; the
+observation is recorded in [evidence 04](evidence/04-task-networking.md).
+
 ### 5. The execution role could not authenticate to ECR
 
-**Symptom.** Fixing the network did not make the task start. It changed the error, which is
-what exposed the second fault.
+**Symptom.** Fixing the network did not make the task start. It changed the error.
+
+This one was suspected before the deployment: the previous owner's own comment in `iam.tf`
+says "double check this actually covers everything ECS needs", and reading the policy
+against the documented pull sequence showed the token action missing. The deployment was
+still run with only the network fix, deliberately, so the IAM failure could be observed on
+its own rather than assumed.
 
 | | Before the network fix | After |
 |---|---|---|
-| Time to fail | 4m 45s | 32s |
+| Time to fail | 4m 31s | 32s |
 | HTTP status | `StatusCode: 0` | `StatusCode: 400` |
 | Error | `i/o timeout` | `AccessDeniedException` |
 
@@ -312,7 +335,7 @@ repository on its own, pushing, then applying the rest:
 the case it exists for: a dependency that leaves Terraform's graph and comes back. It is also
 a first-run problem only.
 
-**10. The ECR login cannot work.** `docker login --username AWS ${{ env.ECR_REGISTRY }}` — that
+**10. The ECR login cannot work.** `docker login --username AWS ${{ env.ECR_REGISTRY }}`: that
 variable is never defined anywhere in the file so it expands to empty, and a username with no
 password either prompts, hanging the runner, or fails. Replaced with
 `aws-actions/amazon-ecr-login@v2`, which exposes the registry as `steps.ecr.outputs.registry`.
@@ -321,9 +344,9 @@ password either prompts, hanging the runner, or fails. Replaced with
 `devops-assignment:latest`, an unqualified name, which Docker resolves against Docker Hub
 rather than ECR. Fixed to the fully qualified URI.
 
-Also added `--platform linux/amd64`. Fargate is x86; a build on an ARM machine produces an
-image that pushes and pulls fine and then fails to execute with an error that never mentions
-architecture. The runner is x86 so this changes nothing in CI, which is the point: a local
+Also added `--platform linux/amd64`. The task definition leaves `runtimePlatform` unset, so
+Fargate runs it as X86_64; a build on an ARM machine produces an image that pushes and pulls
+fine and then fails to execute with an error that never mentions architecture. The runner is x86 so this changes nothing in CI, which is the point: a local
 build should behave the same way.
 
 **12. Long-lived access keys.** This one works, and is still the thing most worth changing.
@@ -336,22 +359,40 @@ branch may assume the role.
 
 ```json
 "StringLike": {
-  "token.actions.githubusercontent.com:sub": "repo:matanweisz/allcloud-assignment:ref:refs/heads/main"
+  "token.actions.githubusercontent.com:sub": [
+    "repo:matanweisz/allcloud-assignment:ref:refs/heads/main",
+    "repo:matanweisz/allcloud-assignment:pull_request"
+  ]
 }
 ```
 
-Without that condition on `sub`, any repository on GitHub could assume the role.
+Without that condition on `sub`, any repository on GitHub could assume the role. The second
+entry exists because GitHub sends a `pull_request` subject for PR runs, not the branch form;
+a trust policy with only the branch entry silently breaks the plan-on-PR flow.
 
 **Also changed:** a `permissions:` block, which was absent entirely and which OIDC requires
-(`id-token: write`). A `concurrency` group, because two applies racing the same state is the
-fastest way to corrupt it. `fmt -check` and `validate` before anything is created. Plan on
-pull requests with apply gated to pushes on `main`, applying the exact plan file produced
-rather than re-planning at apply time. And the image tagged with the git SHA rather than
-`latest`, so every deploy produces a distinct task definition revision and a rollback target.
+(`id-token: write`). A `concurrency` group with a fixed name, because every run mutates the
+same AWS resources and a per-ref group would let two runs race. `fmt -check` and `validate`
+before anything is created. Plan on pull requests, with every mutating step (the ECR
+bootstrap, the image push, the apply) gated to pushes on `main`, applying the exact plan
+file produced rather than re-planning at apply time. And the image tagged with the git SHA
+rather than `latest`, so every deploy produces a distinct task definition revision and a
+rollback target.
 
 **Deliberately not added:** a test step for an application with no tests, and the
 `render-task-definition` / `deploy-task-definition` actions, which would give CI and Terraform
 the same job and guarantee they drift.
+
+**Still missing, and said out loud rather than hidden:** a remote state backend, and the
+OIDC provider plus CI role themselves. With no `backend` block the state in CI would live
+and die with the runner, so this workflow can succeed against a fresh account exactly once;
+the first change before running it for real is an S3 backend with `use_lockfile = true`,
+which is also what puts the Terraform state, and the generated database password inside it,
+behind encryption at rest. And `secrets.AWS_ROLE_ARN` names a role this configuration does
+not create: the role a pipeline assumes should not be created by the pipeline it
+authorizes, and since the brief allows reasoning the pipeline through rather than running
+it, that one-time account bootstrap was never performed. Both are spelled out in
+[`evidence/09`](evidence/09-pipeline.md).
 
 ---
 
@@ -389,7 +430,12 @@ Fargate, on task definition revision `devops-assignment:8`.
 
 The service event is the line that matters against the brief's "applies cleanly once and then
 never reaches a stable state doesn't count." With `wait_for_steady_state = true`, the apply
-itself blocked for 2m53s waiting for that event rather than returning in two seconds.
+itself blocked for close to three minutes waiting for that event rather than returning in two
+seconds.
+
+The stack was destroyed after these captures, per the brief's cost note, so the DNS name
+above no longer resolves. Everything in this section is reproducible with
+`terraform apply` plus the bootstrap sequence in [`evidence/09`](evidence/09-pipeline.md).
 
 ---
 
@@ -452,8 +498,13 @@ policy:           TargetTrackingScaling, ALBRequestCountPerTarget, target 300
 cooldowns:        60s out, 300s in
 ```
 
-Application Auto Scaling created the alarm pair automatically, the low alarm at 270, which is
-target tracking's built-in 10% hysteresis.
+Application Auto Scaling creates the alarm pair itself, with the low alarm 10% under the
+target as built-in hysteresis. One honesty note on the linked capture: `evidence/11a` was
+taken before the load test below, so it shows the alarm pair at the original guessed target
+of 600 (alarms 600/540). The measurement forced the correction to 300, which was applied and
+is what the screenshot and `terraform/variables.tf` show; the stack was destroyed before
+anyone thought to re-run the CLI capture. The capture is kept because the alarm mechanics it
+demonstrates are the same at either value.
 
 ![Autoscaling policy configuration](evidence/screenshots/03-autoscaling-policy.png)
 
@@ -469,15 +520,30 @@ rather than from the load generator.
 
 | req/min per target | avg response | p95 response | **CPU max** | Memory |
 |---|---|---|---|---|
+| 19 | 3.6 ms | 10.8 ms | 0.76% | 4.10% |
+| 20 | 4.4 ms | 16.6 ms | 1.12% | 4.10% |
 | 78 | 1.6 ms | 3.0 ms | **0.24%** | 4.10% |
 | 80 | 2.0 ms | 5.3 ms | **0.31%** | 4.10% |
 | **917** | **318 ms** | **606 ms** | **1.92%** | **4.10%** |
 
+That is the full table from [evidence 11](evidence/11-autoscaling-metric-choice.md),
+including the two rows that do not fit a tidy curve: the 19 and 20 req/min samples show
+higher CPU and p95 than the 78 and 80 ones. Load was generated in bursts, and CloudWatch
+averages over 60 second periods, so a short burst inside a mostly idle minute reads
+differently from a steady one. The comparison below uses the clean low points and the
+saturated high point.
+
 Between 80 and 917 requests per minute, **p95 response time rose about 114x** while **CPU went
 from 0.31% to 1.92%** and memory did not move at all.
 
-The arithmetic that settles it. Extrapolating from 917 req/min at 1.92% CPU, a 50% CPU target
-would require roughly:
+The structural reason comes first, because it connects to the code review answer below: the
+app runs on the Werkzeug development server and serializes a trivial JSON document. Nothing
+is compute-bound. What runs out is concurrency, so requests queue and the CPU stays idle
+waiting rather than working. A queue-bound service keeps its CPU flat no matter how bad
+things get, so a CPU alarm has no signal to act on.
+
+The measurement illustrates just how flat. Even reading the 1.92% figure generously and
+extrapolating linearly, a 50% CPU target would need roughly:
 
 ```
 917 x (50 / 1.92) = ~23,900 requests per minute per task
@@ -486,10 +552,6 @@ would require roughly:
 Around 25 times the load that already pushed p95 past 600 ms. **A CPU policy would never fire
 before the service was unusable**, while showing a green alarm the whole time. That is worse
 than no policy, because it looks like it works.
-
-The cause connects to the code review answer below: the app runs on the Werkzeug development
-server and serializes a trivial JSON document. Nothing is compute-bound. What runs out is
-concurrency, so requests queue and the CPU stays idle waiting rather than working.
 
 ### The target value, and what I don't know
 
@@ -671,11 +733,13 @@ When a dependency prints a warning about its own suitability every time it start
 deployment ships anyway, the warning has been normalised. That is worth naming in review
 even when nothing is currently failing.
 
-The concrete consequences: no worker process model, so no isolation between requests and no
-recovery from a wedged worker. No request timeouts, so one slow client holds a connection.
-No limit on request line or header size. No graceful shutdown handling, which matters
-because ECS sends SIGTERM and then waits out the deregistration delay before killing the
-task.
+The concrete consequences: a single process with unbounded threads rather than a bounded
+worker pool, so no recovery from a wedged process and no backpressure. No request timeouts,
+so one slow client holds a connection. No limit on request line or header size. No graceful
+shutdown handling, which matters on ECS: at task stop the target is deregistered and drained
+first, then the container receives SIGTERM, and SIGKILL follows after the stop timeout, 30
+seconds by default. A server that ignores SIGTERM burns the whole window and gets killed
+mid-connection.
 
 It also connects to a decision made elsewhere in this repo. The autoscaling metric is
 requests per target rather than CPU, precisely because this server's constraint is

@@ -59,6 +59,12 @@ that it acts on them. The app will not answer for another 21 seconds.
 So ECS starts a task, the load balancer marks it unhealthy, ECS kills it, and starts
 another. That loop is the bug the assignment says only shows up once you deploy.
 
+*Superseded by evidence 08.* The loop happened, but this hypothesis about its cause was
+wrong: the arithmetic worked out during the live diagnosis (45 seconds of failures needed
+against 25 seconds of unavailability) shows the grace period could not have caused it. The
+health check path did. This file is kept as written because being wrong here is part of
+the record.
+
 ## Why this is not fixed yet
 
 This is deliberate. We know the arithmetic and could raise the grace period right now
@@ -67,7 +73,7 @@ the deployment fail and correlating ECS service events, task stop reasons and ta
 health, and that evidence does not exist yet.
 
 The 26 second measurement is recorded here as the input to that diagnosis. The fix and
-its derivation are in evidence 06, after the deployment produced the symptom.
+its derivation are in evidence 08, after the deployment produced the symptom.
 
 ## The fix we are not applying
 

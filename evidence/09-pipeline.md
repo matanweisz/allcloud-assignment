@@ -116,7 +116,7 @@ permissions:
   id-token: write
   contents: read
 
-- uses: aws-actions/configure-aws-credentials@v4
+- uses: aws-actions/configure-aws-credentials@v6
   with:
     role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
 ```
@@ -130,11 +130,16 @@ The trust policy condition that does the scoping:
 
 ```json
 "StringLike": {
-  "token.actions.githubusercontent.com:sub": "repo:matanweisz/allcloud-assignment:ref:refs/heads/main"
+  "token.actions.githubusercontent.com:sub": [
+    "repo:matanweisz/allcloud-assignment:ref:refs/heads/main",
+    "repo:matanweisz/allcloud-assignment:pull_request"
+  ]
 }
 ```
 
 Without that condition on `sub`, any GitHub repository in the world could assume the role.
+The second entry matters because GitHub sends `sub` ending in `:pull_request` for PR runs,
+not the branch form, so a policy that only allows the branch quietly breaks the PR plan.
 
 The IAM OIDC provider no longer needs a thumbprint. AWS verifies the JWKS endpoint against
 its trusted root CA library, and `configure-aws-credentials` ignores a thumbprint if one is
@@ -146,20 +151,49 @@ supplied.
 repository default is. `id-token: write` is required for OIDC to work at all, and
 `contents: read` is the least checkout needs.
 
-**`concurrency` group added.** Two applies running against the same state at once is the
-fastest way to corrupt it. `cancel-in-progress: false` because cancelling an apply midway
-is worse than queueing.
+**`concurrency` group added.** Every run mutates the same AWS resources, so runs must not
+overlap. The group name is fixed rather than per-ref, because a per-ref group would happily
+let a pull request run and a main run race each other. `cancel-in-progress: false` because
+cancelling an apply midway is worse than queueing.
 
-**Plan on pull requests, apply only on main.** The original applied on every push to main
-with no plan step at all. Now the whole job runs on a pull request up to and including
-`terraform plan`, and the apply step is gated on the push to `main`. The plan is written to
-a file and that exact file is applied, rather than re-planning at apply time.
+**Plan on pull requests, apply only on main.** The original applied on every push with no
+plan step at all. Now a pull request runs `init`, `fmt -check`, `validate` and `terraform
+plan`, and every step that changes the account, the ECR bootstrap, the image push and the
+apply, is gated on a push to `main`. The plan is written to a file and that exact file is
+applied, rather than re-planning at apply time.
+
+Worth admitting: the first version of this fix gated only the final apply, so a pull
+request could still run the `-target` apply and push an image. Its own comment said
+"pull requests stop here" and was wrong. Caught in a review pass of the corrected file
+and fixed by putting the same gate on all three mutating steps.
 
 **`terraform fmt -check` and `validate` before anything is created.** Cheap, and catches a
 malformed file before it reaches AWS.
 
-**Image tagged with the git SHA rather than `latest`.** See evidence 10, which covers why
-`latest` is the thing worth flagging in review.
+**Image tagged with the git SHA rather than `latest`.** A mutable `latest` means two
+deploys can point at different bytes under the same name, there is no rollback target, and
+`describe-task-definition` cannot tell you what is actually running. A SHA tag makes every
+deploy addressable. The repository itself is left `MUTABLE` deliberately: with immutable
+tags, re-running a failed workflow on the same commit would fail the push.
+
+## What is still missing, on purpose
+
+**A remote state backend.** There is no `backend` block, so in CI the state would live on
+the ephemeral runner and evaporate with it: the workflow can succeed against a fresh
+account exactly once, and run two would try to recreate everything and fail on name
+conflicts. It stays out because this exercise was driven from one laptop with local state,
+and a backend bucket is account bootstrap this repo cannot create for itself. The first
+change before running this pipeline for real is an S3 backend with `use_lockfile = true`,
+which is also where the Terraform state containing the generated database password gets
+encryption at rest.
+
+**The OIDC provider and the CI role.** `secrets.AWS_ROLE_ARN` refers to a role this
+configuration does not create. That is deliberate in direction (the role a pipeline
+assumes should not be created by the pipeline it authorizes) and honest in fact: since the
+brief allows reasoning the pipeline through rather than running it, the provider and role
+were never created in the account. Creating them is a one-time bootstrap, either by hand
+or from a separate Terraform configuration, and the role's ARN enters as a repository
+secret.
 
 ## What was deliberately not added
 

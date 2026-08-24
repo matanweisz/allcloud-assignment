@@ -15,7 +15,8 @@ Apply complete! Resources: 0 added, 1 changed, 0 destroyed.
 ```
 
 A new task started at 18:28:11 and stopped at 18:28:43. Thirty two seconds, against four
-minutes forty five for the previous one.
+and a half minutes for the previous one (4m 31s from pull start to stopping, per the
+timestamps in evidence 05).
 
 That timing change alone said the network fix had worked before the error message was
 even read. Timeouts are slow. Refusals are fast.
@@ -26,7 +27,7 @@ Same task, same API call, two deployments apart.
 
 | | Task 1, 18:21 | Task 2, 18:28 |
 |---|---|---|
-| Lifetime | 4m 45s | 32s |
+| Pull start to stopping | 4m 31s | 32s |
 | HTTP status in the error | `StatusCode: 0` | `StatusCode: 400` |
 | Error type | `i/o timeout` | `AccessDeniedException` |
 | Retries | `exceeded maximum number of attempts, 3` | `service call has been retried 1 time(s)` |
