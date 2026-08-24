@@ -11,7 +11,7 @@ variable "project_name" {
 variable "container_port" {
   description = "Port the container listens on"
   type        = number
-  default     = 5000
+  default     = 8080
 }
 
 variable "app_version" {
