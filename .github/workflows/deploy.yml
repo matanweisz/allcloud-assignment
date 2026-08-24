@@ -1,0 +1,46 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: devops-assignment
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -auto-approve
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Login to ECR
+        run: |
+          docker login --username AWS ${{ env.ECR_REGISTRY }}
+
+      - name: Build and push image
+        run: |
+          docker build -t $ECR_REPOSITORY:latest ./app
+          docker push $ECR_REPOSITORY:latest
+
+      - name: Force new deployment
+        run: |
+          aws ecs update-service \
+            --cluster devops-assignment-cluster \
+            --service devops-assignment-service \
+            --force-new-deployment
