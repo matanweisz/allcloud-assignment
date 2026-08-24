@@ -1,0 +1,34 @@
+PROOF: end to end, captured 2026-08-24 15:39:57Z
+
+--- 1. curl the ALB public DNS from a laptop outside the VPC ---
+$ curl -i http://devops-assignment-alb-2011566585.us-east-1.elb.amazonaws.com/
+HTTP/1.1 200 OK
+Date: Mon, 24 Aug 2026 15:39:57 GMT
+Content-Type: application/json
+Content-Length: 102
+Connection: keep-alive
+Server: Werkzeug/3.1.8 Python/3.12.14
+
+{"hostname":"ip-172-31-22-2.ec2.internal","message":"hello from devops-assignment","version":"1.0.0"}
+$ curl -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s' http://devops-assignment-alb-2011566585.us-east-1.elb.amazonaws.com/
+HTTP 200 in 0.336513s
+
+--- 2. the caller is genuinely outside AWS ---
+public IP of this machine: 5.29.11.119
+
+--- 3. target group health ---
+--------------------------------------------------
+|              DescribeTargetHealth              |
++-------------+-------+----------+---------------+
+|     AZ      | Port  |  State   |    Target     |
++-------------+-------+----------+---------------+
+|  us-east-1c |  8080 |  healthy |  172.31.22.2  |
++-------------+-------+----------+---------------+
+--- 4. service state ---
+------------------------------------------------
+|               DescribeServices               |
++---------+----------+-------------+-----------+
+| desired | pending  |   rollout   |  running  |
++---------+----------+-------------+-----------+
+|  1      |  0       |  COMPLETED  |  1        |
++---------+----------+-------------+-----------+
