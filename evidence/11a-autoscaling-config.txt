@@ -1,0 +1,32 @@
+PROOF: Application Auto Scaling, captured 2026-08-24 21:05:38Z
+
+--- scalable target ---
+------------------------------------------------------------------------------
+|                           DescribeScalableTargets                          |
++-----------+----------------------------------------------------------------+
+|  Dimension|  ecs:service:DesiredCount                                      |
+|  Max      |  4                                                             |
+|  Min      |  1                                                             |
+|  Resource |  service/devops-assignment-cluster/devops-assignment-service   |
++-----------+----------------------------------------------------------------+
+--- target tracking policy ---
+[
+    {
+        "Name": "devops-assignment-requests-per-target",
+        "Type": "TargetTrackingScaling",
+        "Target": 600.0,
+        "Metric": "ALBRequestCountPerTarget",
+        "Label": "app/devops-assignment-alb/857046ef229ef9a0/targetgroup/devops-assignment-tg/eaeda0d5ddf100a7",
+        "ScaleOut": 60,
+        "ScaleIn": 300
+    }
+]
+--- the CloudWatch alarms it created automatically ---
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+|                                                                                            DescribeAlarms                                                                                            |
++----------------------+------------------------+-----------------------------------------------------------------------------------------------------------------------------+----------+-------------+
+|      Comparison      |        Metric          |                                                            Name                                                             | Periods  |  Threshold  |
++----------------------+------------------------+-----------------------------------------------------------------------------------------------------------------------------+----------+-------------+
+|  GreaterThanThreshold|  RequestCountPerTarget |  TargetTracking-service/devops-assignment-cluster/devops-assignment-service-AlarmHigh-f983bc47-936e-4614-b329-de6d466c7c9e  |  3       |  600.0      |
+|  LessThanThreshold   |  RequestCountPerTarget |  TargetTracking-service/devops-assignment-cluster/devops-assignment-service-AlarmLow-36a43338-75ca-4b9f-b164-2549ea8d000f   |  15      |  540.0      |
++----------------------+------------------------+-----------------------------------------------------------------------------------------------------------------------------+----------+-------------+
