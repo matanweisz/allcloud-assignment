@@ -27,3 +27,11 @@ variable "app_version" {
   type    = string
   default = "1.0.0"
 }
+
+# Set from a measurement rather than picked. See evidence/11 for the load test
+# this came from.
+variable "requests_per_target_target" {
+  description = "Target ALB requests per task per minute for autoscaling"
+  type        = number
+  default     = 600
+}
