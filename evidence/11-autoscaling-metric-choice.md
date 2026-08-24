@@ -135,7 +135,8 @@ useful points rather than five.
    records a scaling activity, and that `desiredCount` increases. Configuration existing is
    not the same as configuration working.
 5. **Measure scale-out latency end to end.** From the alarm firing to a new task passing
-   health checks is at minimum the 26 second application startup plus image pull plus ENI
+   health checks is at minimum the ~26 second application startup (the coded 25 second
+   sleep as measured, evidence 02) plus image pull plus ENI
    attach, realistically 60 to 90 seconds. If the traffic pattern can double inside that
    window, target tracking alone is not sufficient and the answer is a higher baseline task
    count rather than more aggressive scaling.

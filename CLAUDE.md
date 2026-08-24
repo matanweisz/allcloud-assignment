@@ -6,6 +6,11 @@ debug it against a real AWS account, productionize two things, and write it up.
 
 Owner: Matan Weisz. Region: `us-east-1`. Account: personal.
 
+This file is working context for the AI tooling used during the assignment, committed
+because the brief invites showing how the work was done. It froze mid-work: the bug
+register below stops at 11 entries and marks some as open. SUBMISSION.md is the
+authoritative record.
+
 ## Rules that override normal instincts
 
 **Never "fix as you type."** The bugs are the deliverable. `git show bdd007f` is the
@@ -32,7 +37,7 @@ terraform/            all infra, no modules        (as handed over)
 .github/workflows/    deploy.yml                   (as handed over)
 evidence/             committed. screenshots + CLI output referenced by SUBMISSION.md
 .notes/               gitignored. research, working state, bug tracker
-SUBMISSION.md         the deliverable. does not exist yet
+SUBMISSION.md         the deliverable
 ```
 
 `.notes/` holds the distilled research so agents do not re-fetch AWS docs. Read it before

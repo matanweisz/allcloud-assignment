@@ -1,3 +1,11 @@
+NOTE, added after teardown: this capture is from 21:05Z, while the policy still
+carried the pre-measurement target of 600 (alarms 600/540). The load test that ran
+21:04-21:20Z (evidence 11) showed 600 sits too close to the measured degradation
+point, and the target was corrected to 300 and re-applied. The applied 300 is what
+the console screenshot (screenshots/03) and terraform/variables.tf show. The alarm
+pair below is still the point of this capture: Application Auto Scaling creates
+both alarms itself, with the low alarm 10% under the target.
+
 PROOF: Application Auto Scaling, captured 2026-08-24 21:05:38Z
 
 --- scalable target ---
