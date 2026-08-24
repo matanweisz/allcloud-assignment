@@ -25,8 +25,8 @@ resource "aws_security_group" "ecs_tasks" {
 
   ingress {
     description     = "From ALB"
-    from_port       = 5000
-    to_port         = 5000
+    from_port       = 8080
+    to_port         = 8080
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
