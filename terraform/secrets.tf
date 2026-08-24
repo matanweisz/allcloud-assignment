@@ -23,6 +23,13 @@ resource "aws_secretsmanager_secret" "db_password" {
   recovery_window_in_days = 0
 }
 
+# Known limitation, stated rather than hidden: the generated value is stored
+# in Terraform state, both here and in random_password's result. With local
+# state in this exercise that file stays on one machine and out of git (state
+# is gitignored). In production this is the argument for an encrypted S3
+# backend, or on Terraform >= 1.11 for generating the value ephemerally and
+# writing it through the write-only secret_string_wo argument so it never
+# enters state at all.
 resource "aws_secretsmanager_secret_version" "db_password" {
   secret_id     = aws_secretsmanager_secret.db_password.id
   secret_string = random_password.db.result
