@@ -273,7 +273,146 @@ capture.
 
 ---
 
-## Still to come in this document
+## Question 3: Fargate, ECS on EC2, or EKS
 
-Part 2 (Secrets Manager, autoscaling) and the answers to questions 3 and 4 are not written
-yet, because the work is not done yet. They will be added as they are completed.
+**ECS on Fargate, and I would move it to ARM64.** Same answer as what is running, reached
+by working out the numbers rather than by defending the status quo.
+
+The workload is one Flask container at 0.25 vCPU and 0.5 GB, scaling between 1 and 4 tasks,
+maintained long-term by a small team.
+
+### The number that decides it
+
+Fargate compute for this service, us-east-1, 730 hours:
+
+```
+(0.25 vCPU x $0.0404784) + (0.5 GB x $0.004446) = $0.01234/hr = $9.01/month
+```
+
+The Application Load Balancer in front of it costs `$0.0225/hr = $16.43/month` before a
+single LCU.
+
+**The load balancer costs more than the compute it balances.** That single fact settles the
+argument, because the ALB is identical in all three options. Any cost comparison between
+Fargate, EC2 and EKS here is an argument about a number smaller than the fixed cost sitting
+next to it.
+
+### Why not ECS on EC2
+
+Per vCPU, EC2 is genuinely cheaper. A t4g.medium is $0.0168/vCPU-hr against Fargate's
+effective $0.04937/vCPU-hr at the same memory ratio, so roughly **2.9x cheaper at perfect
+packing**. Anyone claiming Fargate is cheaper per unit of compute is wrong.
+
+It does not win here, because you buy whole instances rather than vCPUs:
+
+| Option | Monthly |
+|---|---|
+| 1 Fargate task | $9.01 |
+| 4 Fargate tasks (the max) | $36.04 |
+| 1 x t4g.small + 30 GiB gp3 | $14.66 |
+| 2 x t4g.small (surviving one AZ) | $29.32 |
+
+Below two tasks EC2 is more expensive than Fargate. With the second instance that AZ
+redundancy actually requires, EC2 only wins above four tasks, which is this service's
+ceiling. **At maximum scale, EC2 saves about $7 a month.**
+
+In exchange for that $7, the team takes on AMI patching, ECS agent and container runtime
+upgrades, an auto scaling group with a capacity provider, instance draining on scale-in,
+and right-sizing. AWS changed the ECS-optimized AMI in June 2024 so that it no longer
+updates packages at launch, making the patching cadence explicitly the operator's problem,
+and the Amazon Linux 2 variant reaches end of life on 30 June 2026. That is a migration
+this team would already own.
+
+Seven dollars a month is around fifteen minutes of engineer time. The first AMI migration
+costs more than a year of the saving.
+
+### Why not EKS
+
+The EKS control plane is `$0.10/hr = $73/month` before a single node runs. That is **eight
+times the entire compute bill** for a service that would otherwise cost $9.
+
+Cost is not the real objection. The cadence is. Kubernetes minor versions land roughly
+every four months with 14 months of standard support, then 12 months of extended support at
+six times the control plane price. At the end of extended support AWS auto-upgrades the
+control plane, and node groups are explicitly not upgraded with it. That is a recurring
+upgrade project, forever, for one container serving a JSON document. Add the addon
+lifecycle, an ingress controller to install and maintain, and IRSA or Pod Identity for
+workload permissions.
+
+EKS buys portability and an ecosystem. Neither is a stated requirement, and neither is free.
+
+### Why Fargate is right rather than merely adequate
+
+Nothing in this workload touches a Fargate limitation. Fargate cannot do privileged
+containers, GPUs, host networking, daemon scheduling, `devices` or `tmpfs`. A stateless
+Flask app behind an ALB needs none of them. EBS and EFS are supported, so even state would
+not force a move.
+
+And the evidence from this exercise is direct: across roughly two hours of active
+debugging, every problem was mine. Wrong port, wrong health check path, missing egress,
+missing IAM permission, a grace period that did not match the app. **Not one of them was a
+host problem**, because there was no host to have problems. On EC2 the same session would
+have included at least the question of whether the instance was healthy, which is a
+hypothesis I never had to form or rule out.
+
+The ARM64 move is the one change worth making. Fargate on Graviton is about 20% cheaper for
+identical behaviour, taking this to $7.21/month. It costs one line in the task definition
+and a `linux/arm64` build.
+
+### What would make this answer wrong
+
+Saying "Fargate is cheaper" without qualification, because per vCPU it is not. Saying "EKS
+scales better", because ECS autoscales on the same Application Auto Scaling signals and
+nothing here approaches a scaling ceiling in either. Saying "Kubernetes is the standard",
+which is a preference wearing a justification. And any cost argument that never mentions
+the load balancer, which is larger than the entire compute delta and identical in all three
+cases.
+
+## Question 4: one thing to flag in code review
+
+**The application is served by the Werkzeug development server.**
+
+```python
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
+```
+
+It is not broken. It serves correct responses, passes health checks, and returned 200 from
+outside the VPC throughout. Nothing in this assignment fails because of it.
+
+I would flag it because the software says so itself. From our own CloudWatch logs, on every
+task start:
+
+```
+WARNING: This is a development server. Do not use it in a production deployment.
+Use a production WSGI server instead.
+```
+
+When a dependency prints a warning about its own suitability every time it starts, and the
+deployment ships anyway, the warning has been normalised. That is worth naming in review
+even when nothing is currently failing.
+
+The concrete consequences: no worker process model, so no isolation between requests and no
+recovery from a wedged worker. No request timeouts, so one slow client holds a connection.
+No limit on request line or header size. No graceful shutdown handling, which matters
+because ECS sends SIGTERM and then waits out the deregistration delay before killing the
+task.
+
+It also connects to a decision made elsewhere in this repo. The autoscaling metric is
+requests per target rather than CPU, precisely because this server's constraint is
+concurrency rather than processor time. The development server is the reason CPU is a poor
+signal here. Two apparently unrelated choices trace back to the same line.
+
+The fix is small, which is part of why it is worth raising: add `gunicorn` to
+`requirements.txt` and change the Dockerfile's `CMD` to
+`gunicorn --bind 0.0.0.0:8080 --workers 2 app:app`.
+
+It was left alone deliberately. The brief asked for one thing flagged in review, not
+changed, and modifying application behaviour beyond what was needed to make the deployment
+work would have blurred the line between the bugs I was asked to find and improvements I
+decided to make.
+
+Runners-up, for completeness: no HTTPS listener, so credentials would cross the internet in
+plaintext if this ever carried any; and `aws_iam_role.ecs_task_role` is created with no
+policy attached and referenced by the task definition, which is harmless now and becomes a
+trap the moment someone assumes it grants something.
