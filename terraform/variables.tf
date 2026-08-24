@@ -27,11 +27,3 @@ variable "app_version" {
   type    = string
   default = "1.0.0"
 }
-
-# TODO(candidate): this is not how secrets should be handled in a real
-# environment. You're implementing the fix for this one, not just writing
-# about it - see Part 2, item 1.
-variable "db_password" {
-  type    = string
-  default = "SuperSecretPassword123!"
-}
