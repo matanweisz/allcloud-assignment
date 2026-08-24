@@ -41,7 +41,7 @@ and answers questions that a deployment answers in five minutes.
 
 ## What was broken
 
-Seven faults across five layers. `terraform validate` passes on the original configuration,
+Twelve faults across six layers. `terraform validate` passes on the original configuration,
 so none of them are reachable by static analysis.
 
 | # | Layer | Fault | Evidence |
@@ -53,6 +53,11 @@ so none of them are reachable by static analysis.
 | 5 | IAM | execution role missing `ecr:GetAuthorizationToken` and `logs:*` | [06](evidence/06-execution-role-missing-permissions.md) |
 | 6 | Deployment | grace period 5s against a 25s startup | [02](evidence/02-startup-time.md), [08](evidence/08-rollback-loop.md) |
 | 7 | Deployment | `wait_for_steady_state` unset, so a failed deploy reports success | [08](evidence/08-rollback-loop.md) |
+| 8 | CI/CD | `terraform apply` runs before `terraform init` | [09](evidence/09-pipeline.md) |
+| 9 | CI/CD | Terraform applies before any image has been pushed | [09](evidence/09-pipeline.md) |
+| 10 | CI/CD | `docker login` has no password, `ECR_REGISTRY` is never defined | [09](evidence/09-pipeline.md) |
+| 11 | CI/CD | image pushed to a bare name, so Docker resolves it to Docker Hub | [09](evidence/09-pipeline.md) |
+| 12 | CI/CD | long-lived access keys instead of OIDC | [09](evidence/09-pipeline.md) |
 
 ---
 
@@ -264,6 +269,89 @@ rollback reverts the **task definition**, and the fault was in the **target grou
 no task definition contains. ECS rolled back to a task definition that was never the
 problem and the replacement tasks failed identically. The circuit breaker protects against
 a bad image. It offers nothing against a misconfigured load balancer.
+
+---
+
+### 8 to 12. The deployment pipeline
+
+The brief says the pipeline does not need to run, and that reasoning it through and showing
+the corrected file is enough. Corrected file:
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). Full write-up:
+[`evidence/09`](evidence/09-pipeline.md).
+
+Five faults. Four are fatal, the fifth works fine and is still the one most worth changing.
+
+**8. `apply` before `init`.**
+
+```yaml
+- name: Terraform apply
+  run: terraform apply -auto-approve
+- name: Terraform init
+  run: terraform init
+```
+
+The job dies on the first step and the step that would have fixed it never runs. Worth
+treating as a signal rather than a typo: these steps are in the order someone thought of
+them, not the order they need to happen. That makes the ordering of everything else in the
+file suspect, and it is.
+
+**9. Applying before the image exists.** Even with `init` moved up, the first apply creates an
+ECS service pointing at a repository created seconds earlier and empty.
+
+There is no circular dependency in Terraform. The graph is fine. The problem is that pushing
+an image is not a Terraform resource, so it cannot be sequenced. Resolved by creating the
+repository on its own, pushing, then applying the rest:
+
+```yaml
+- run: terraform apply -auto-approve -target=aws_ecr_repository.app
+- # build and push
+- run: terraform apply ... -var="image_tag=$GITHUB_SHA"
+```
+
+`-target` carries a warning about not being for routine use, and that warning is fair. This is
+the case it exists for: a dependency that leaves Terraform's graph and comes back. It is also
+a first-run problem only.
+
+**10. The ECR login cannot work.** `docker login --username AWS ${{ env.ECR_REGISTRY }}` — that
+variable is never defined anywhere in the file so it expands to empty, and a username with no
+password either prompts, hanging the runner, or fails. Replaced with
+`aws-actions/amazon-ecr-login@v2`, which exposes the registry as `steps.ecr.outputs.registry`.
+
+**11. The image goes to Docker Hub.** `docker push $ECR_REPOSITORY:latest` pushes
+`devops-assignment:latest`, an unqualified name, which Docker resolves against Docker Hub
+rather than ECR. Fixed to the fully qualified URI.
+
+Also added `--platform linux/amd64`. Fargate is x86; a build on an ARM machine produces an
+image that pushes and pulls fine and then fails to execute with an error that never mentions
+architecture. The runner is x86 so this changes nothing in CI, which is the point: a local
+build should behave the same way.
+
+**12. Long-lived access keys.** This one works, and is still the thing most worth changing.
+
+A static key pair sits in GitHub secrets indefinitely, works from anywhere for anyone who
+obtains it, keeps working after the job that leaked it ends, and is rotated by hand, which
+means it is not rotated. Replaced with OIDC: GitHub mints a token per run, AWS exchanges it
+for credentials that expire in about an hour, and the trust policy scopes which repository and
+branch may assume the role.
+
+```json
+"StringLike": {
+  "token.actions.githubusercontent.com:sub": "repo:matanweisz/allcloud-assignment:ref:refs/heads/main"
+}
+```
+
+Without that condition on `sub`, any repository on GitHub could assume the role.
+
+**Also changed:** a `permissions:` block, which was absent entirely and which OIDC requires
+(`id-token: write`). A `concurrency` group, because two applies racing the same state is the
+fastest way to corrupt it. `fmt -check` and `validate` before anything is created. Plan on
+pull requests with apply gated to pushes on `main`, applying the exact plan file produced
+rather than re-planning at apply time. And the image tagged with the git SHA rather than
+`latest`, so every deploy produces a distinct task definition revision and a rollback target.
+
+**Deliberately not added:** a test step for an application with no tests, and the
+`render-task-definition` / `deploy-task-definition` actions, which would give CI and Terraform
+the same job and guarantee they drift.
 
 ---
 
