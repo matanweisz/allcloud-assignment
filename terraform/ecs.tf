@@ -90,5 +90,10 @@ resource "aws_ecs_service" "app" {
     container_port   = var.container_port
   }
 
-  depends_on = [aws_lb_listener.app]
+  # The listener so the target group is attached before tasks register, and
+  # the secret version because the task definition references the secret's
+  # ARN, not the version: without this, nothing stops Terraform starting the
+  # service while the secret still has no value, which fails the task with
+  # ResourceInitializationError.
+  depends_on = [aws_lb_listener.app, aws_secretsmanager_secret_version.db_password]
 }

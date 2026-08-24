@@ -8,6 +8,9 @@ on:
 
 # Required for GitHub to mint an OIDC token. Without id-token: write the
 # role assumption below fails. contents: read is the least checkout needs.
+# The role's trust policy must allow both subjects this workflow produces:
+# repo:<owner>/<repo>:ref:refs/heads/main for pushes and
+# repo:<owner>/<repo>:pull_request for PR plans.
 permissions:
   id-token: write
   contents: read
@@ -16,28 +19,33 @@ env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: devops-assignment
 
-# One deploy at a time. Two concurrent applies against the same state is
-# the fastest way to corrupt it.
+# One run at a time, across all refs, because every run mutates the same AWS
+# resources. A per-ref group would let a PR run and a main run overlap.
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.15.1
 
+      # NOTE: no remote state backend is configured, so state is local to this
+      # runner and the workflow can only succeed against a fresh account once.
+      # Fine for an exercise that was driven from one laptop; the first change
+      # before running this for real is an S3 backend with use_lockfile.
+      # See SUBMISSION.md, pipeline section.
       - name: Terraform init
         working-directory: terraform
         run: terraform init -input=false
@@ -52,14 +60,17 @@ jobs:
       # and the image has to exist before the ECS service can reference it.
       # Creating the repository on its own breaks that cycle.
       - name: Create the ECR repository if it does not exist
+        if: github.event_name == 'push'
         working-directory: terraform
         run: terraform apply -auto-approve -input=false -target=aws_ecr_repository.app
 
       - name: Log in to ECR
+        if: github.event_name == 'push'
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push
+        if: github.event_name == 'push'
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
@@ -71,7 +82,9 @@ jobs:
         working-directory: terraform
         run: terraform plan -input=false -no-color -var="image_tag=$GITHUB_SHA" -out=tfplan
 
-      # Pull requests stop here. Nothing is applied from a branch.
+      # Pull requests stop at the plan above. Everything that changes the
+      # account, including the ECR bootstrap and the image push, is gated to
+      # pushes on main.
       - name: Terraform apply
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         working-directory: terraform
