@@ -42,6 +42,16 @@ resource "aws_iam_role_policy" "ecs_task_execution_custom" {
         Resource = aws_ecr_repository.app.arn
       },
       {
+        # The execution role resolves secrets, not the task role. Scoped to
+        # this one secret. No kms:Decrypt needed because the secret uses the
+        # default aws/secretsmanager key; a customer managed key would
+        # require it, with the key arn as an additional resource.
+        Sid      = "ReadDbPassword"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = aws_secretsmanager_secret.db_password.arn
+      },
+      {
         # The :* suffix matters. The log group arn attribute omits it, but
         # log stream writes are evaluated against the arn including it.
         Sid      = "WriteAppLogs"

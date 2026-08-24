@@ -29,9 +29,18 @@ resource "aws_ecs_task_definition" "app" {
       ]
       environment = [
         { name = "APP_VERSION", value = var.app_version },
-        # TODO(candidate): plaintext secret in a task definition. This is
-        # the one you're fixing for real - see Part 2, item 1.
-        { name = "DB_PASSWORD", value = var.db_password }
+      ]
+
+      # Resolved by the execution role at task startup and injected as an
+      # environment variable inside the container. The value never appears in
+      # the task definition, so `aws ecs describe-task-definition` shows only
+      # this ARN. Note this is resolved once at start: rotating the secret
+      # requires a new task, it does not reach a running container.
+      secrets = [
+        {
+          name      = "DB_PASSWORD"
+          valueFrom = aws_secretsmanager_secret.db_password.arn
+        },
       ]
       logConfiguration = {
         logDriver = "awslogs"
