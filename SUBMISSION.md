@@ -288,7 +288,17 @@ healthy target group is not by itself proof of external reachability, so both ar
 | Grace period | 90 |
 | ECS service event | `has reached a steady state.` |
 
-The last line is the one that matters against the brief's "applies cleanly once and then
+![Target group showing 1 healthy target](evidence/screenshots/01-target-group-healthy.png)
+
+Target group `devops-assignment-tg`: 1 total target, 1 healthy, 0 unhealthy. Health check on
+`/health`, protocol HTTP, target type IP, port 8080.
+
+![ECS service running](evidence/screenshots/02-ecs-service-running.png)
+
+Cluster `devops-assignment-cluster`: 1 active service, 1 running task, 0 pending, launch type
+Fargate, on task definition revision `devops-assignment:8`.
+
+The service event is the line that matters against the brief's "applies cleanly once and then
 never reaches a stable state doesn't count." With `wait_for_steady_state = true`, the apply
 itself blocked for 2m53s waiting for that event rather than returning in two seconds.
 
@@ -355,6 +365,12 @@ cooldowns:        60s out, 300s in
 
 Application Auto Scaling created the alarm pair automatically, the low alarm at 270, which is
 target tracking's built-in 10% hysteresis.
+
+![Autoscaling policy configuration](evidence/screenshots/03-autoscaling-policy.png)
+
+Policy `devops-assignment-requests-per-target`: target tracking on
+`ALBRequestCountPerTarget (300)`, scalable dimension `ecs:service:DesiredCount`, status
+Active, scale-in cooldown 300s, scale-out cooldown 60s.
 
 ### Why requests per target and not CPU, with the number
 
