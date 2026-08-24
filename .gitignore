@@ -24,3 +24,6 @@ venv/
 
 # Local
 .DS_Store
+
+# Working notes, not part of the submission
+.notes/
