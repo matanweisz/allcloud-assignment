@@ -1,6 +1,0 @@
-### docker build (baseline, unmodified Dockerfile)
-sha256:0e15bcd646eb58e88d78dd8cec99e083ef39ce3472459767b2d908458a069905
-
-### image metadata - what port does the image advertise?
-ExposedPorts: {"5000/tcp":{}}
-Cmd: ["python","app.py"]
