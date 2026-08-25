@@ -195,6 +195,14 @@ were never created in the account. Creating them is a one-time bootstrap, either
 or from a separate Terraform configuration, and the role's ARN enters as a repository
 secret.
 
+Because that bootstrap does not exist in this account, the workflow is split into two
+jobs: `validate` needs no credentials and runs on every push, and `deploy` checks for the
+role ARN secret and skips cleanly when it is absent. The first version of the file did
+not, so every push to main failed at `configure-aws-credentials` with "Could not load
+credentials from any providers": with the secret unset, `role-to-assume` expanded to
+nothing and the action had no provider to fall back on. A workflow that is expected to
+be unrunnable should say so by skipping, not by accumulating red runs.
+
 ## What was deliberately not added
 
 No test step, because the app has no tests and inventing some to make the pipeline look

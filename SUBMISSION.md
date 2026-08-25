@@ -391,7 +391,10 @@ which is also what puts the Terraform state, and the generated database password
 behind encryption at rest. And `secrets.AWS_ROLE_ARN` names a role this configuration does
 not create: the role a pipeline assumes should not be created by the pipeline it
 authorizes, and since the brief allows reasoning the pipeline through rather than running
-it, that one-time account bootstrap was never performed. Both are spelled out in
+it, that one-time account bootstrap was never performed. The workflow is honest about
+this at runtime too: `fmt`, `validate` and the bootstrap check run on every push with no
+credentials, and the deploy job skips cleanly when the role ARN secret is absent instead
+of failing every run. Both gaps are spelled out in
 [`evidence/09`](evidence/09-pipeline.md).
 
 ---
