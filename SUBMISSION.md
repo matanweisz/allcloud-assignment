@@ -588,7 +588,7 @@ Full detail in [`evidence/11`](evidence/11-autoscaling-metric-choice.md).
 
 ## Screen recording
 
-**[Diagnosing the deployment failure](https://drive.google.com/file/d/1W4JC_OY406G1K4QHH3W6Zs0sNPR5A27q/view?usp=sharing)** (Google Drive, viewable without signing in)
+**[Diagnosing the deployment failure](https://drive.google.com/file/d/1W4JC_OY406G1K4QHH3W6Zs0sNPR5A27q/view?usp=sharing)** (Google Drive, 9:27, viewable without signing in)
 
 Unedited, single take, working through the deployment that applies cleanly and never settles.
 
